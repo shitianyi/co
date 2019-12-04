@@ -1,4 +1,4 @@
-#include "base/unitest.h"
+﻿#include "base/unitest.h"
 #include "base/json.h"
 
 namespace test {
@@ -146,6 +146,12 @@ DEF_test(json) {
 
         v = json::parse("{ \"key\" : true }");
         EXPECT_EQ(v["key"].get_bool(), true);
+
+        v = json::parse("{ \"key\": \"\\/\\r\\n\\t\\b\\f\" }");
+        EXPECT_EQ(fastring(v["key"].get_string()), "/\r\n\t\b\f");
+
+        v = json::parse("{ \"key\": \"\u4e2d\u56fd\u4eba\" }");
+        EXPECT_EQ(fastring(v["key"].get_string()), "中国人");
     }
 }
 
