@@ -1,9 +1,10 @@
 #pragma once
 
+#include "dbg.h"
+#include "hook.h"
 #include "../co.h"
 #include "../../atomic.h"
 #include "../../log.h"
-#include "hook.h"
 #include <unordered_map>
 
 #ifndef _WIN32
@@ -17,6 +18,11 @@
 
 namespace co {
 
+enum {
+    EV_read = 1,
+    EV_write =2,
+};
+
 #ifdef _WIN32
 typedef OVERLAPPED_ENTRY epoll_event;
 
@@ -26,23 +32,16 @@ class Epoll {
     Epoll();
     ~Epoll();
 
-    bool add_ev_read(sock_t fd) {
-        return this->_Add_event(fd, 1);
-    }
+    bool add_event(sock_t fd, int ev);
 
-    bool add_ev_write(sock_t fd) {
-        return this->_Add_event(fd, 2);
-    }
-
-    void del_ev_read(sock_t fd) {
-        this->_Del_event(fd, 1);
-    }
-
-    void del_ev_write(sock_t fd) {
-        this->_Del_event(fd, 2);
+    void del_event(sock_t fd, int ev) {
+        COLOG << "del ev, fd: " << fd << ", ev: " << ev;
+        auto it = _ev_map.find(fd);
+        if (it != _ev_map.end() && (it->second & ev)) it->second &= ~ev;
     }
 
     void del_event(sock_t fd) {
+        COLOG << "del ev, fd: " << fd;
         _ev_map.erase(fd);
     }
 
@@ -69,22 +68,12 @@ class Epoll {
         atomic_swap(&_signaled, false);
     }
 
-    static bool has_ev_pipe(const epoll_event& ev) {
+    static bool is_ev_pipe(const epoll_event& ev) {
         return ev.lpOverlapped == 0;
     }
 
     static void* ud(const epoll_event& ev) {
         return ev.lpOverlapped;
-    }
-
-  private:
-    bool _Add_event(sock_t fd, int ev);
-
-    void _Del_event(sock_t fd, int ev) {
-        auto it = _ev_map.find(fd);
-        if (it != _ev_map.end() && (it->second & ev)) {
-            it->second &= ~ev;
-        }
     }
 
   private:
@@ -102,18 +91,31 @@ class Epoll {
     Epoll();
     ~Epoll();
 
-    bool add_ev_read(int fd, int u);
-    bool add_ev_write(int fd, int u);
+    bool add_event(int fd, int ev, int ud) {
+        if (ev == EV_read) return this->add_ev_read(fd, ud);
+        return this->add_ev_write(fd, ud);
+    }
+
+    void del_event(int fd, int ev) {
+        if (ev == EV_read) return this->del_ev_read(fd);
+        return this->del_ev_write(fd);
+    }
+
+    bool add_ev_read(int fd, int ud);
+    bool add_ev_write(int fd, int ud);
 
     void del_ev_read(int fd);
     void del_ev_write(int fd);
 
     void del_event(int fd) {
+        COLOG << "del ev, fd: " << fd;
         auto it = _ev_map.find(fd);
         if (it != _ev_map.end()) {
             _ev_map.erase(it);
             if (epoll_ctl(_efd, EPOLL_CTL_DEL, fd, (epoll_event*)8) != 0) {
                 ELOG << "epoll del error: " << co::strerror() << ", fd: " << fd;
+            } else {
+                COLOG << "epoll del ev ok, fd: " << fd;
             }
         }
     }
@@ -126,20 +128,24 @@ class Epoll {
         return _ev[i];
     }
 
-    static bool has_ev_read(const epoll_event& ev) {
-        return ev.events & (EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLPRI);
-    }
-
-    static bool has_ev_write(const epoll_event& ev) {
-        return ev.events & (EPOLLOUT | EPOLLERR | EPOLLHUP);
-    }
-
-    static bool has_ev_pipe(const epoll_event& ev) {
+    static bool is_ev_pipe(const epoll_event& ev) {
         return ev.data.u64 == 0;
     }
 
+    // @ev.data.u64:
+    //   higher 32 bits: id of read coroutine
+    //    lower 32 bits: id of write coroutine
+    // 
+    //   IN  &   OUT  ->  ev.data.u64
+    //  !IN  &  !OUT  ->  ev.data.u64         (EPOLLERR | EPOLLHUP)
+    //   IN  &  !OUT  ->  ev.data.u64 >> 32   
+    //  !IN  &   OUT  ->  ev.data.u64 << 32
     static uint64 ud(const epoll_event& ev) {
-        return ev.data.u64;
+        if (ev.events & EPOLLIN) {
+            return (ev.events & EPOLLOUT) ? ev.data.u64 : (ev.data.u64 >> 32);
+        } else {
+            return (ev.events & EPOLLOUT) ? (ev.data.u64 << 32) : ev.data.u64;
+        }
     }
 
     void signal(char c = 'x') {
@@ -167,11 +173,9 @@ class Epoll {
     Epoll();
     ~Epoll();
 
-    bool add_ev_read(int fd, void* p);
-    bool add_ev_write(int fd, void* p);
+    bool add_event(int fd, int ev, void* ud);
 
-    void del_ev_read(int fd);
-    void del_ev_write(int fd);
+    void del_event(int fd, int ev);
 
     void del_event(int fd);
 
@@ -188,7 +192,7 @@ class Epoll {
         return _ev[i];
     }
 
-    static bool has_ev_pipe(const epoll_event& ev) {
+    static bool is_ev_pipe(const epoll_event& ev) {
         return ev.udata == 0;
     }
 

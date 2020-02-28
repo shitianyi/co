@@ -1,5 +1,6 @@
 ﻿#include "base/unitest.h"
 #include "base/json.h"
+#include "base/str.h"
 
 namespace test {
 
@@ -40,15 +41,31 @@ DEF_test(json) {
         EXPECT_EQ(d.str(), "3.14");
         EXPECT_EQ(d.pretty(), "3.14");
 
+        d = 7e-5;
+        EXPECT(d.is_double());
+        EXPECT_EQ(d.get_double(), 7e-5);
+
+        d = 1.2e5;
+        EXPECT(d.is_double());
+        EXPECT_EQ(d.get_double(), 1.2e5);
+
+
         Json cs = "hello world";
         EXPECT(cs.is_string());
+        EXPECT_EQ(cs.size(), 11);
         EXPECT_EQ(cs.str(), "\"hello world\"");
         EXPECT_EQ(cs.pretty(), "\"hello world\"");
 
         Json s = fastring("hello world");
         EXPECT(s.is_string());
+        EXPECT_EQ(s.size(), 11);
         EXPECT_EQ(s.str(), "\"hello world\"");
         EXPECT_EQ(s.pretty(), "\"hello world\"");
+
+        Json t = s;
+        t = "xxx";
+        EXPECT_EQ(t.str(), "\"xxx\"");
+        EXPECT_EQ(s.str(), "\"hello world\"");
 
         Json a = json::array();
         EXPECT(a.is_array());
@@ -56,11 +73,29 @@ DEF_test(json) {
         EXPECT_EQ(a.str(), "[]");
         EXPECT_EQ(a.pretty(), "[]");
 
+        Json x = a;
+        for (int i = 0; i < 10; ++i) x.push_back(i);
+        EXPECT_EQ(x.str(), "[0,1,2,3,4,5,6,7,8,9]");
+        EXPECT_EQ(a.str(), "[0,1,2,3,4,5,6,7,8,9]");
+
         Json o = json::object();
         EXPECT(o.is_object());
         EXPECT(o.empty());
         EXPECT_EQ(o.str(), "{}");
         EXPECT_EQ(o.pretty(), "{}");
+
+        Json p = o;
+        p.add_member("0", 0);
+        p.add_member("1", 1);
+        p.add_member("2", 2);
+        p.add_member("3", 3);
+        p.add_member("4", 4);
+        p.add_member("5", 5);
+        p.add_member("6", 6);
+        p.add_member("7", 7);
+        p.add_member("8", 8);
+        EXPECT_EQ(p.str(), o.str());
+        EXPECT_EQ(*(void**)&o, *(void**)&p);
     }
 
     DEF_case(array) {
@@ -95,13 +130,41 @@ DEF_test(json) {
 
     DEF_case(parse) {
         EXPECT(json::parse("{").is_null());
-        Json v;
 
+        Json v;
         v.parse_from("");
         EXPECT(v.is_null());
 
         v = json::parse("{}");
+        EXPECT(v.is_object());
         EXPECT_EQ(v.str(), "{}");
+
+        v = json::parse("[]");
+        EXPECT(v.is_array());
+        EXPECT_EQ(v.str(), "[]");
+
+        v = json::parse("[ 1, 2 , \"hello\" ]");
+        EXPECT(v.is_array());
+        EXPECT_EQ(v[0].get_int(), 1);
+        EXPECT_EQ(v[1].get_int(), 2);
+        EXPECT_EQ(v[2].get_string(), fastring("hello"));
+
+        v = json::parse("[ 1, 2 , \"hello\", { \"7\": 7, \"8\": 8 } ]");
+        EXPECT(v.is_array());
+        EXPECT(v[3].is_object());
+        EXPECT_EQ(v[3].size(), 2);
+        EXPECT_EQ(v[3]["7"].get_int(), 7);
+        EXPECT_EQ(v[3]["8"].get_int(), 8);
+
+        v = json::parse("{\"key\": []}");
+        EXPECT(v.is_object());
+        EXPECT(v["key"].is_array());
+        EXPECT_EQ(v["key"].str(), "[]");
+
+        v = json::parse("{\"key\": {}}");
+        EXPECT(v.is_object());
+        EXPECT(v["key"].is_object());
+        EXPECT_EQ(v["key"].str(), "{}");
 
         v.parse_from("{ \"a\":23, \n \r \t  \"b\":\"str\", \r\n }");
         EXPECT_EQ(v.str(), "{\"a\":23,\"b\":\"str\"}");
@@ -113,6 +176,12 @@ DEF_test(json) {
         EXPECT_EQ(v.str(), "{\"s\":\"s\\\"\"}");
 
         v = json::parse("{\"key\":23 45}");
+        EXPECT(v.is_null());
+
+        v = json::parse("{\"key\": 23,");
+        EXPECT(v.is_null());
+
+        v = json::parse("{\"key\": ,}");
         EXPECT(v.is_null());
 
         v = json::parse("{\"key\": 23 }");
@@ -146,6 +215,15 @@ DEF_test(json) {
 
         v = json::parse("{ \"key\" : true }");
         EXPECT_EQ(v["key"].get_bool(), true);
+
+        fastring ss = "{ \"hello\":23, \"world\": { \"xxx\": 99 } }";
+        v = json::parse(ss.data(), ss.size(), 20);
+        EXPECT(v.is_object());
+        EXPECT_EQ(v["hello"].get_int(), 23);
+
+        Json xx = v["world"];
+        v = Json();
+        EXPECT_EQ(xx["xxx"].str(), "99");
 
         v = json::parse("{ \"key\": \"\\/\\r\\n\\t\\b\\f\" }");
         EXPECT_EQ(fastring(v["key"].get_string()), "/\r\n\t\b\f");

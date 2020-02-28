@@ -5,7 +5,7 @@
 #include "atomic.h"
 #include "thread.h"
 
-#ifdef _WIN32
+#ifdef _MSC_VER
 #pragma warning (disable:4722)
 #endif
 
@@ -14,6 +14,7 @@ DEC_int32(min_log_level);
 namespace ___ {
 namespace log {
 
+// log::init() must be called once at the beginning of main().
 void init();
 
 // Write all buffered logs to destination and stop the logging thread.
@@ -42,7 +43,7 @@ class LevelLogSaver {
 
         (*xxLog) << "DIWEF"[level];
         xxLog->resize(14); // make room for time: 1108 18:16:08
-        (*xxLog) << ' ' << gettid() << ' ' << file << ':' << line << ']' << ' ';
+        (*xxLog) << ' ' << current_thread_id() << ' ' << file << ':' << line << ']' << ' ';
     }
 
     ~LevelLogSaver() {
@@ -63,7 +64,7 @@ class FatalLogSaver {
     FatalLogSaver(const char* file, unsigned int line) {
         if (xxLog == 0) xxLog = new fastream(128);
         xxLog->clear();
-        (*xxLog) << ' ' << gettid() << ' ' << file << ':' << line << ']' << ' ';
+        (*xxLog) << ' ' << current_thread_id() << ' ' << file << ':' << line << ']' << ' ';
     }
 
     ~FatalLogSaver() {

@@ -22,6 +22,7 @@ class EventImpl {
 };
 
 void EventImpl::wait() {
+    CHECK(gSched) << "must be called in coroutine..";
     Coroutine* co = gSched->running();
     co->ev = ev_wait;
     if (co->s != gSched) co->s = gSched;
@@ -35,11 +36,12 @@ void EventImpl::wait() {
 }
 
 bool EventImpl::wait(unsigned int ms) {
+    CHECK(gSched) << "must be called in coroutine..";
     Coroutine* co = gSched->running();
     co->ev = ev_wait;
     if (co->s != gSched) co->s = gSched;
 
-    timer_id_t id = gSched->add_ev_timer(ms);
+    timer_id_t id = gSched->add_timer(ms, false);
     {
         ::MutexGuard g(_mtx);
         _co_wait.insert(std::make_pair(co, id));
@@ -109,6 +111,7 @@ class MutexImpl {
 };
 
 inline void MutexImpl::lock() {
+    CHECK(gSched) << "must be called in coroutine..";
     _mtx.lock();
     if (!_lock) {
         _lock = true;
@@ -167,6 +170,7 @@ class PoolImpl {
     ~PoolImpl() = default;
 
     void* pop() {
+        CHECK(gSched) << "must be called in coroutine..";
         auto& v = _pool[gSched->id()];
         if (!v.empty()) {
             void* p = v.back();
@@ -177,6 +181,7 @@ class PoolImpl {
     }
 
     void push(void* p) {
+        CHECK(gSched) << "must be called in coroutine..";
         if (p) _pool[gSched->id()].push_back(p);
     }
 

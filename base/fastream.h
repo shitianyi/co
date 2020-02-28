@@ -1,6 +1,6 @@
 #pragma once
 
-#ifdef _WIN32
+#ifdef _MSC_VER
 #pragma warning (disable:4624)
 #endif
 
@@ -13,32 +13,27 @@
 #include <string.h>
 #include <string>
 #include <new>
+#include <utility>
 
 class fastream {
   public:
-    explicit fastream(size_t capacity = 32) {
-        _cap = capacity;
-        _size = 0;
-        _p = (char*) malloc(capacity);
+    fastream() : _cap(0), _size(0), _p(0) {}
+    
+    explicit fastream(size_t capacity)
+        : _cap(capacity), _size(0), _p((char*) malloc(capacity)) {
     }
 
     ~fastream() {
-        free(_p);
+        if (_p) free(_p);
     }
 
     fastream(const fastream&) = delete;
     void operator=(const fastream&) = delete;
 
-    fastream(fastream&& fs) {
-        memcpy(this, &fs, sizeof(fs));
+    fastream(fastream&& fs) noexcept
+        : _cap(fs._cap), _size(fs._size), _p(fs._p) {
         fs._p = 0;
-    }
-
-    fastream& operator=(fastream&& fs) {
-        free(_p);
-        memcpy(this, &fs, sizeof(fs));
-        fs._p = 0;
-        return *this;
+        fs._cap = fs._size = 0;
     }
 
     const char* data() const {
@@ -96,16 +91,13 @@ class fastream {
         }
     }
 
-    void swap(fastream& fs) {
-        if (&fs != this) {
-            char buf[sizeof(fastream)];
-            memcpy(buf, this, sizeof(fastream));
-            memcpy(this, &fs, sizeof(fastream));
-            memcpy(&fs, buf, sizeof(fastream));
-        }
+    void swap(fastream& fs) noexcept {
+        std::swap(fs._cap, _cap);
+        std::swap(fs._size, _size);
+        std::swap(fs._p, _p);
     }
 
-    void swap(fastream&& fs) {
+    void swap(fastream&& fs) noexcept {
         fs.swap(*this);
     }
 
@@ -255,21 +247,28 @@ class fastream {
     void _Ensure(size_t n) {
         if (_cap < _size + n) this->reserve((_cap * 3 >> 1) + n);
     }
-
+    
   private:
     size_t _cap;
     size_t _size;
     char* _p;
 };
 
-// magicstream is for creating a fastring without memory copy
+// DON'T TOUCH!!  (for internal use only)
+//
+// The magicstream object will be invalid after the method str() is called.
+// The str() method MUST be called once and only once.
 //   fastring s = (magicstream() << "hello" << 123).str();
 class magicstream {
   public:
-    explicit magicstream(size_t cap = 16) {
-        new (_buf) fastream(cap + fastring::header_size());
-        _fs.resize(fastring::header_size());
+    magicstream() {
+        new (_buf) fastream();
     }
+
+    explicit magicstream(size_t cap) {
+        new (_buf) fastream(cap);
+    }
+
     ~magicstream() {}
 
     template<typename T>
@@ -278,12 +277,14 @@ class magicstream {
         return *this;
     }
 
-    fastream& stream() {
+    fastream& stream() noexcept {
         return _fs;
     }
 
     fastring str() const {
-        return fastring((char*)_fs.data(), _fs.capacity(), _fs.size());
+        return fastring::from_raw_buffer(
+            (char*)_fs.data(), _fs.capacity(), _fs.size()
+        );
     }
 
   private:
