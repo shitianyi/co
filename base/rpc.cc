@@ -3,7 +3,6 @@
 #include "flag.h"
 #include "log.h"
 #include "hash.h"
-#include "random.h"
 #include "fastring.h"
 #include "fastream.h"
 #include "str.h"
@@ -19,21 +18,20 @@ DEF_int32(rpc_conn_idle_sec, 180, "#2 connection may be closed if no data was re
 DEF_int32(rpc_max_idle_conn, 1024, "#2 max idle connections");
 DEF_bool(rpc_tcp_nodelay, true, "#2 enable tcp nodelay if true");
 DEF_bool(rpc_log, true, "#2 enable rpc log if true");
-DEF_uint32(rpc_max_log_size, 1024, "#2 truncate the rpc log if its size is greater than this value");
-DEF_int32(rpc_max_json_buffer_size, 0, "#2 max buffer size for json::parse(), 0 for unlimited");
-DEF_bool(rpc_retry, false, "#2 for rpc client, retry if the rpc call failed due to disconnection");
 
 #define RPCLOG LOG_IF(FLG_rpc_log)
 
 namespace rpc {
 
 struct Header {
-    int32 magic; // 0xbaddad
-    int32 len;   // body len
+    uint16 info;  // reserved
+    uint16 magic; // 0x7777
+    uint32 len;   // body len
 }; // 8 bytes
 
+static const uint16 kMagic = 0x7777;
+
 inline void set_header(void* header, int msg_len) {
-    static const int32 kMagic = hton32(0xbaddad);
     ((Header*) header)->magic = kMagic;
     ((Header*) header)->len = hton32(msg_len);
 }
@@ -81,7 +79,6 @@ class ServerImpl : public Server {
     int _conn_num;
     fastring _passwd;
     std::unique_ptr<Service> _service;
-    thread_ptr<Random> _rand;
 };
 
 void on_new_connection(void* p) {
@@ -160,7 +157,7 @@ void ServerImpl::on_connection(Connection* conn) {
                 goto recv_beg;
             }
 
-            if (unlikely(ntoh32(header.magic) != 0xbaddad)) goto magic_err;
+            if (unlikely(header.magic != kMagic)) goto magic_err;
 
             len = ntoh32(header.len);
             if (unlikely(len > FLG_rpc_max_msg_size)) goto msg_too_long_err;
@@ -170,11 +167,10 @@ void ServerImpl::on_connection(Connection* conn) {
             if (unlikely(r == 0)) goto recv_zero_err;
             if (unlikely(r == -1)) goto recv_err;
 
-            req = json::parse(fs.data(), fs.size(), FLG_rpc_max_json_buffer_size);
+            req = json::parse(fs.data(), fs.size());
             if (req.is_null()) goto json_parse_err;
 
-            if (fs.size() > FLG_rpc_max_log_size) fs.resize(FLG_rpc_max_log_size);
-            RPCLOG << "recv req: " << fs;
+            RPCLOG << "recv req: " << req;
         } while (0);
 
         // call rpc and send response to the client
@@ -189,8 +185,7 @@ void ServerImpl::on_connection(Connection* conn) {
             r = co::send(fd, fs.data(), (int) fs.size(), FLG_rpc_send_timeout);
             if (unlikely(r == -1)) goto send_err;
 
-            if (fs.size() > FLG_rpc_max_log_size + sizeof(Header)) fs.resize(FLG_rpc_max_log_size + sizeof(Header));
-            RPCLOG << "send res: " << (fs.c_str() + sizeof(Header));
+            RPCLOG << "send res: " << res;;
         } while (0);
     }
 
@@ -237,7 +232,7 @@ bool ServerImpl::auth(Connection* conn) {
         r = co::recvn(conn->fd, &header, sizeof(header), 7000);
         if (unlikely(r == 0)) goto recv_zero_err;
         if (unlikely(r == -1)) goto recv_err;
-        if (ntoh32(header.magic) != 0xbaddad) goto magic_err;
+        if (header.magic != kMagic) goto magic_err;
 
         len = ntoh32(header.len);
         if (len > FLG_rpc_max_msg_size) goto msg_too_long_err;
@@ -247,7 +242,7 @@ bool ServerImpl::auth(Connection* conn) {
         if (unlikely(r == 0)) goto recv_zero_err;
         if (unlikely(r == -1)) goto recv_err;
 
-        req = json::parse(fs.data(), fs.size(), FLG_rpc_max_json_buffer_size);
+        req = json::parse(fs.data(), fs.size());
         if (req.is_null()) goto json_parse_err;
 
         x = req["method"];
@@ -259,10 +254,8 @@ bool ServerImpl::auth(Connection* conn) {
 
     // send auth require to the client
     do {
-        if (_rand == 0) _rand.reset(new Random((unsigned) now::us()));
-
         res.add_member("method", "auth");
-        res.add_member("nonce", str::from(_rand->next()));
+        res.add_member("nonce", str::from(now::us()));
         res.add_member("err", 401);
         res.add_member("errmsg", "401 Unauthorized");
 
@@ -281,7 +274,7 @@ bool ServerImpl::auth(Connection* conn) {
         r = co::recvn(conn->fd, &header, sizeof(header), FLG_rpc_recv_timeout);
         if (unlikely(r == 0)) goto recv_zero_err;
         if (unlikely(r == -1)) goto recv_err;
-        if (ntoh32(header.magic) != 0xbaddad) goto magic_err;
+        if (header.magic != kMagic) goto magic_err;
 
         len = ntoh32(header.len);
         if (len > FLG_rpc_max_msg_size) goto msg_too_long_err;
@@ -291,7 +284,7 @@ bool ServerImpl::auth(Connection* conn) {
         if (unlikely(r == 0)) goto recv_zero_err;
         if (unlikely(r == -1)) goto recv_err;
 
-        req = json::parse(fs.data(), fs.size(), FLG_rpc_max_json_buffer_size);
+        req = json::parse(fs.data(), fs.size());
         if (req.is_null()) goto json_parse_err;
 
         DLOG << "recv auth response from the client: " << fs;
@@ -435,10 +428,9 @@ void ClientImpl::ping() {
 }
 
 void ClientImpl::call(const Json& req, Json& res) {
-    int r = 0, len = 0, try_count = 0;
+    int r = 0, len = 0;
     Header header;
 
-  try_again:
     if (_fd == -1 && !this->connect()) return;
 
     // send request
@@ -450,8 +442,7 @@ void ClientImpl::call(const Json& req, Json& res) {
         r = co::send(_fd, _fs.data(), (int) _fs.size(), FLG_rpc_send_timeout);
         if (unlikely(r == -1)) goto send_err;
 
-        if (_fs.size() > FLG_rpc_max_log_size + sizeof(Header)) _fs.resize(FLG_rpc_max_log_size + sizeof(Header));
-        RPCLOG << "send req: " << (_fs.c_str() + sizeof(Header));
+        RPCLOG << "send req: " << req;
     } while (0);
 
     // wait for response
@@ -459,7 +450,7 @@ void ClientImpl::call(const Json& req, Json& res) {
         r = co::recvn(_fd, &header, sizeof(header), FLG_rpc_recv_timeout);
         if (unlikely(r == 0)) goto recv_zero_err;
         if (unlikely(r == -1)) goto recv_err;
-        if (unlikely(ntoh32(header.magic) != 0xbaddad)) goto magic_err;
+        if (unlikely(header.magic != kMagic)) goto magic_err;
 
         len = ntoh32(header.len);
         if (unlikely(len > FLG_rpc_max_msg_size)) goto msg_too_long_err;
@@ -469,10 +460,9 @@ void ClientImpl::call(const Json& req, Json& res) {
         if (unlikely(r == 0)) goto recv_zero_err;
         if (unlikely(r == -1)) goto recv_err;
 
-        res = json::parse(_fs.c_str(), _fs.size(), FLG_rpc_max_json_buffer_size);
-        if (_fs.size() > FLG_rpc_max_log_size) _fs.resize(FLG_rpc_max_log_size);
-        RPCLOG << "recv res: " << _fs;
+        res = json::parse(_fs.c_str(), _fs.size());
         if (res.is_null()) goto json_parse_err;
+        RPCLOG << "recv res: " << res;
         return;
     } while (0);
 
@@ -487,10 +477,6 @@ void ClientImpl::call(const Json& req, Json& res) {
   recv_zero_err:
     ELOG << "server close the connection..";
     this->disconnect();
-    if (FLG_rpc_retry && try_count++ == 0) {
-        LOG << "now try sending the request again..";
-        goto try_again;
-    }
     return;
   recv_err:
     ELOG << "recv error: " << co::strerror();
@@ -528,7 +514,7 @@ bool ClientImpl::auth() {
         r = co::recv(_fd, &header, sizeof(header), FLG_rpc_recv_timeout);
         if (unlikely(r == 0)) goto recv_zero_err;
         if (unlikely(r == -1)) goto recv_err;
-        if (ntoh32(header.magic) != 0xbaddad) goto magic_err;        
+        if (header.magic != kMagic) goto magic_err;        
 
         len = ntoh32(header.len);
         if (len > FLG_rpc_max_msg_size) goto msg_too_long_err;
@@ -538,7 +524,7 @@ bool ClientImpl::auth() {
         if (unlikely(r == 0)) goto recv_zero_err;
         if (unlikely(r == -1)) goto recv_err;
 
-        res = json::parse(fs.data(), fs.size(), FLG_rpc_max_json_buffer_size);
+        res = json::parse(fs.data(), fs.size());
         if (res.is_null()) goto json_parse_err;
 
         DLOG << "recv auth request from server: " << fs;
@@ -569,7 +555,7 @@ bool ClientImpl::auth() {
         r = co::recv(_fd, &header, sizeof(header), FLG_rpc_recv_timeout);
         if (unlikely(r == 0)) goto recv_zero_err;
         if (unlikely(r == -1)) goto recv_err;
-        if (ntoh32(header.magic) != 0xbaddad) goto magic_err;        
+        if (header.magic != kMagic) goto magic_err;        
 
         len = ntoh32(header.len);
         if (len > FLG_rpc_max_msg_size) goto msg_too_long_err;
@@ -579,7 +565,7 @@ bool ClientImpl::auth() {
         if (unlikely(r == 0)) goto recv_zero_err;
         if (unlikely(r == -1)) goto recv_err;
 
-        res = json::parse(fs.data(), fs.size(), FLG_rpc_max_json_buffer_size);
+        res = json::parse(fs.data(), fs.size());
         if (res.is_null()) goto json_parse_err;
 
         DLOG << "recv auth result from the server: " << fs;
